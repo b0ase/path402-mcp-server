@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://path402.com/schemas/openclaw-agent-2.0.schema.json",
+  "title": "OpenClaw Agent Manifest",
+  "description": "Cross-platform manifest published by sovereign AI agents at /.well-known/openclaw-agent.json. Read by labour marketplaces (bMovies), token exchanges (Claw-Dex), and direct consumers. Spec: docs/OPENCLAW_AGENT_SPEC.md",
+  "type": "object",
+  "required": ["$schema", "version", "publishedAt", "identity", "soul", "owner", "endpoints"],
+  "properties": {
+    "$schema":     { "const": "openclaw-agent/2.0" },
+    "version":     { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "publishedAt": { "type": "string", "format": "date-time" },
+
+    "identity": {
+      "type": "object",
+      "required": ["slug", "name", "home_url", "manifest_url", "pubkey"],
+      "properties": {
+        "slug":          { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "name":          { "type": "string", "minLength": 1, "maxLength": 200 },
+        "letter":        { "type": "string", "pattern": "^[A-Z]$" },
+        "tagline":       { "type": "string", "maxLength": 200 },
+        "bio":           { "type": "string", "maxLength": 2000 },
+        "home_url":      { "type": "string", "format": "uri", "pattern": "^https://" },
+        "manifest_url":  { "type": "string", "format": "uri", "pattern": "^https://" },
+        "pubkey": {
+          "type": "object",
+          "required": ["alg", "kid", "key_jwk"],
+          "properties": {
+            "alg":     { "enum": ["ed25519", "secp256k1", "p256"] },
+            "kid":     { "type": "string", "maxLength": 128 },
+            "key_jwk": { "type": "object" }
+          }
+        },
+        "id_strands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "id"],
+            "properties": {
+              "kind":    { "type": "string" },
+              "id":      { "type": "string" },
+              "asserts": { "type": "string" }
+            }
+          }
+        },
+        "brand_token":  { "type": "string", "pattern": "^\\$?[A-Z][A-Z0-9]{0,15}$" },
+        "parent_brand": { "type": "string", "pattern": "^\\$?[A-Z][A-Z0-9]{0,15}$" }
+      }
+    },
+
+    "soul": {
+      "description": "Persona, capabilities, behaviour. Schema is implementation-defined — most NPGX agents use npgx-soul/1.0; Bailey uses a custom schema. Recommended fields: identity, appearance, style, voice, capabilities, behaviour, fiduciary.",
+      "type": "object"
+    },
+
+    "owner": {
+      "type": "object",
+      "required": ["fiduciary_kind", "fiduciary_kyc_handle"],
+      "properties": {
+        "fiduciary_kind":       { "enum": ["natural_person", "llc", "ltd", "trust", "dao"] },
+        "fiduciary_name":       { "type": "string" },
+        "fiduciary_kyc_handle": { "type": "string", "description": "Opaque platform handle. MUST NOT contain real-world PII." },
+        "jurisdiction":         { "type": "string", "pattern": "^[A-Z]{2}$" },
+        "is_sole_operator":     { "type": "boolean" },
+        "operates_other_agents": {
+          "type": "array",
+          "items": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+
+    "assets": {
+      "type": "object",
+      "properties": {
+        "avatar":     { "type": "string" },
+        "contentDir": { "type": "string" },
+        "soulFile":   { "type": "string" },
+        "portfolio":  { "type": "array", "items": { "type": "string", "format": "uri" } }
+      }
+    },
+
+    "endpoints": {
+      "type": "object",
+      "required": ["attest", "status"],
+      "properties": {
+        "hire":          { "type": "string", "format": "uri" },
+        "attest":        { "type": "string", "format": "uri" },
+        "status":        { "type": "string", "format": "uri" },
+        "deliveries":    { "type": "string", "format": "uri" },
+        "distributions": { "type": "string", "format": "uri" },
+        "soul_md":       { "type": "string", "format": "uri" }
+      }
+    },
+
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "fee_schedule"],
+        "properties": {
+          "role":        { "type": "string" },
+          "label":       { "type": "string" },
+          "description": { "type": "string" },
+          "fee_schedule": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["tier", "fee_usd"],
+              "properties": {
+                "tier":              { "type": "string" },
+                "duration_max_s":    { "type": "integer", "minimum": 0 },
+                "fee_usd":           { "type": "number", "minimum": 0 },
+                "royalty_point_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+              }
+            }
+          },
+          "lead_time_days":      { "type": "integer", "minimum": 0 },
+          "concurrent_jobs_max": { "type": "integer", "minimum": 0 },
+          "exclusivity":         { "enum": ["non-exclusive", "exclusive"] }
+        }
+      }
+    },
+
+    "token": {
+      "type": "object",
+      "required": ["ticker", "supply_max", "contracts"],
+      "properties": {
+        "ticker":             { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,15}$" },
+        "name":               { "type": "string" },
+        "supply_max":         { "type": "integer", "minimum": 1 },
+        "supply_circulating": { "type": "integer", "minimum": 0 },
+        "decimals":           { "type": "integer", "minimum": 0, "maximum": 18 },
+        "pricing_model":      { "enum": ["alice_bond", "fixed", "amm"] },
+        "contracts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["chain", "kind"],
+            "properties": {
+              "chain":   { "enum": ["bsv", "eth", "base", "sol", "polygon", "arbitrum"] },
+              "kind":    { "enum": ["bsv-21", "bsv-20", "erc-20", "spl"] },
+              "id":      { "type": "string" },
+              "address": { "type": "string" },
+              "mint":    { "type": "string" }
+            }
+          }
+        },
+        "holders_url":        { "type": "string", "format": "uri" },
+        "distributions_url":  { "type": "string", "format": "uri" },
+        "issuer_share_pct":   { "type": "number", "minimum": 0, "maximum": 100 },
+        "platform_share_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "treasury_addresses": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+
+    "markets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "url"],
+        "properties": {
+          "kind":              { "enum": ["token_exchange", "labour_marketplace", "publishing", "social", "other"] },
+          "name":              { "type": "string" },
+          "url":               { "type": "string", "format": "uri" },
+          "registered_at":     { "type": "string", "format": "date-time" },
+          "listing_id":        { "type": "string" },
+          "fee_pct_to_market": { "type": "number", "minimum": 0, "maximum": 100 }
+        }
+      }
+    },
+
+    "economics": {
+      "type": "object",
+      "properties": {
+        "default_split": {
+          "type": "object",
+          "required": ["agent_owner_pct", "token_holders_pct", "marketplace_fee_pct"],
+          "properties": {
+            "agent_owner_pct":     { "type": "number", "minimum": 0, "maximum": 100 },
+            "token_holders_pct":   { "type": "number", "minimum": 0, "maximum": 100 },
+            "marketplace_fee_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "currency":        { "type": "string", "pattern": "^[a-z]{3}$" },
+        "min_payout_usd":  { "type": "number", "minimum": 0 },
+        "payout_destinations": {
+          "type": "object",
+          "properties": {
+            "fiat":   { "type": "string" },
+            "crypto": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
+
+    "config": {
+      "type": "object",
+      "properties": {
+        "ceoModel":          { "type": "string" },
+        "crewModel":         { "type": "string" },
+        "maxTurns":          { "type": "integer", "minimum": 1 },
+        "crewMaxTurns":      { "type": "integer", "minimum": 1 },
+        "maxBudgetUsd":      { "type": "number", "minimum": 0 },
+        "crewMaxBudgetUsd":  { "type": "number", "minimum": 0 }
+      }
+    },
+
+    "attestation": {
+      "type": "object",
+      "properties": {
+        "pubkey_proof": {
+          "type": "object",
+          "required": ["challenge_endpoint", "method"],
+          "properties": {
+            "challenge_endpoint": { "type": "string", "format": "uri" },
+            "method":             { "enum": ["ed25519-detached", "secp256k1-detached"] }
+          }
+        },
+        "tee": {
+          "type": "object",
+          "properties": {
+            "platform":              { "enum": ["android-strongbox", "apple-secure-enclave", "intel-sgx", "amd-sev", "none"] },
+            "attestation_endpoint":  { "type": "string", "format": "uri" },
+            "attestation_format":    { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "signature": {
+      "type": "object",
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg":   { "enum": ["ed25519", "secp256k1", "p256"] },
+        "kid":   { "type": "string" },
+        "value": { "type": "string" }
+      }
+    }
+  }
+}
