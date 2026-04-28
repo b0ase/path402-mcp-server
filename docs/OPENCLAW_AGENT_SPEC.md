@@ -8,10 +8,14 @@ audience: Marketplace operators, agent operators, protocol implementers
 
 # OpenClaw Agent Manifest
 
-**Status:** Draft v2.0.0 · 2026-04-28
+**Status:** Draft v2.0.1 · 2026-04-28
 **Schema id:** `openclaw-agent/2.0`
 **Predecessor:** `openclaw-agent/1.0` (the in-progress format used by NPGX's 26 agents in `npgx/public/agents/<slug>.agent.json`)
 **Compatibility:** Additive. v1 documents validate as v2 with optional fields absent. New fields all live in new top-level blocks.
+
+**Revision history**
+- v2.0.0 (2026-04-28) — initial v2 spec.
+- v2.0.1 (2026-04-28) — formalises canonical `fiduciary_kyc_handle` format (§4) following the cross-project KYC architecture (`docs/CROSS_PROJECT_KYC_ARCHITECTURE.md`). No schema changes; clarification of an existing field.
 
 ---
 
@@ -167,7 +171,21 @@ Who is fiduciarily responsible for the agent. This is the human (or legal entity
 
 **Field notes:**
 
-- `fiduciary_kyc_handle` is an OPAQUE platform-specific reference. It MUST NOT contain real-world PII (no legal names, no document numbers). Marketplaces that have already KYC'd the human resolve the handle to their own internal identity record; marketplaces that haven't redirect the operator to KYC before listing.
+- `fiduciary_kyc_handle` is an OPAQUE reference to the operator's KYC record. It MUST NOT contain real-world PII (no legal names, no document numbers). The **canonical format** (v2.0.1+) is:
+  ```
+  kyc:bap:<bap_id>:<level>:<expiry-yyyy-mm>
+  ```
+  Example: `kyc:bap:15DYpisbfidQMQeDmtNhVCQbfTUu8eLvoU:full:2027-04`
+
+  Where:
+  - `bap_id` — the operator's stable BSV mainnet identity address, written by `@path401/auth-shim` on first OAuth login (or by HandCash / Sigma / direct WIF for power users — same shape regardless of derivation path)
+  - `level` — one of `none | basic | enhanced | full` matching the $401 KYC hierarchy
+  - `expiry-yyyy-mm` — the year-month component of `expires_at` from the KYC strand. Marketplaces should refuse listings whose handle expiry is in the past.
+
+  Resolution: any consumer can verify the handle by querying `@path401/kyc-reader.read({ bapId })` against the shared `kyc_strands` view, or by reading the BSV mainnet for the strand's inscription txid (when on-chain).
+
+  Legacy handles (`kyc:<platform>:<account_id>` from v2.0.0 or earlier) remain readable but are platform-specific — marketplaces SHOULD upgrade to the canonical format on next manifest refresh once the operator has a `bap_id`.
+
 - `operates_other_agents` is the **multi-agent operator** signal. NPGX's b0ase operates 26 agents under one fiduciary; this list lets a crawler (and Claw-Dex) recognise that one KYC underpins many agents. Bailey Connor is `is_sole_operator: true` with an empty list.
 - `fiduciary_kind: "dao"` is reserved for future use (multi-sig, DAO-governed agents). Out of scope for v2.
 
