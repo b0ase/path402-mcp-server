@@ -1,16 +1,20 @@
 ---
 doctitle: Cross-Project KYC Architecture
 docdate: 2026-04-28
-docversion: 0.1.0 (draft)
+docversion: 0.2.0 (draft) — login layer revised for consumer-grade adoption
 audience: Engineers building any b0ase product that gates features on KYC
 related: docs/OPENCLAW_AGENT_SPEC.md
 ---
 
 # Cross-Project KYC Architecture
 
-**Status:** Draft v0.1.0 · 2026-04-28
+**Status:** Draft v0.2.0 · 2026-04-28
 **Goal:** A single KYC verification per user, reusable across every b0ase product without re-running Veriff.
 **Scope:** bMovies · path401 · bit-sign · Bitcoin-Mint family · bmovies-exchange · OpenClaw agent manifests · future products.
+
+> **Revision history**
+> v0.1.0 (2026-04-28) — initial draft proposed Sigma Identity (BAP-based OAuth) as the login layer.
+> v0.2.0 (2026-04-28) — login layer changed to **familiar OAuth (Google + Twitter) + server-derived ephemeral keys** for consumer reach. Sigma Identity remains supported as an opt-in "power user" alternative. KYC layer (bit-sign + Veriff) and consumption layer are unchanged.
 
 ---
 
@@ -18,18 +22,28 @@ related: docs/OPENCLAW_AGENT_SPEC.md
 
 Today the b0ase portfolio runs **three parallel KYC systems** against the same Hetzner Postgres instance, with three different vendor integrations and three different schemas. Users could end up paying for Veriff three times to access products that should treat them as the same person.
 
-The unified model collapses these to a **single canonical KYC issuer** (bit-sign.online) attached to a **single canonical login identity** (Sigma Identity, BAP-based). Every other product becomes a *reader* — it asks "does this BAP id have a `kyc/veriff` strand at level X?" and routes accordingly. Veriff runs once. The strand is on-chain via path401. PII stays inside bit-sign.
+The unified model collapses these to a **single canonical KYC issuer** (bit-sign.online) attached to **familiar consumer login** (Google + Twitter OAuth → server-derived ephemeral keys → BAP id minted server-side). Every other product becomes a *reader* — it asks "does this BAP id have a `kyc/veriff` strand at level X?" and routes accordingly. Veriff runs once. The strand is on-chain via path401. PII stays inside bit-sign.
+
+The login layer deliberately uses **OAuth tools consumers already trust** (Google, Twitter) rather than bespoke wallet-based sign-in. The blockchain identity is created and managed *for* the user, not *by* the user.
 
 ```
-                 Sigma Identity (auth.sigmaidentity.com)
-                       └── returns bap_id + pubkey on login
+        Google OAuth          Twitter OAuth         (HandCash for power users)
+              │                     │                          │
+              └─────────────────────┴──────────────────────────┘
                                     │
                                     ▼
+                       Auth shim (per-product)
+                        ├── derives a deterministic BSV keypair from the
+                        │   OAuth subject id + a server-held HMAC seed
+                        └── mints a BAP id on first login (path401 root)
+                                    │
+                                    ▼  (bap_id is now stable across products)
+                                    │
                        bit-sign.online — KYC ISSUER
                         ├── runs Veriff once per bap_id
                         └── mints kyc/veriff strand on path401 chain
                                     │
-                                    ▼ (strand readable on-chain)
+                                    ▼  (strand readable on-chain)
                                     │
         ┌─────────────┬─────────────┴─────────────┬──────────────────┐
         │             │                           │                  │
@@ -74,26 +88,45 @@ Each product has its own login system. There is no concept of "I am the same per
 ### 2.1 Three layers, three responsibilities
 
 **Layer 1 — Login (who are you)**
-Sigma Identity (`auth.sigmaidentity.com`, by Luke Rohenaz / b-open-io) provides OAuth 2.1 + OIDC sign-in backed by **BAP** (Bitcoin Attestation Protocol) identities. Each user has a stable `bap_id` + `pubkey`. Plugin: `@sigma-auth/better-auth-plugin`. Same model as "Sign in with Google" / "Sign in with Apple" — but the identity primitive is on-chain.
+**Familiar consumer OAuth — Google + Twitter as the primary path.** When a user logs in for the first time, the auth shim derives a **deterministic BSV keypair** from the OAuth subject id + a server-held HMAC seed, and mints a **BAP id** (path401 root inscription) for them. The user never sees a wallet, never installs anything, never copies a seed phrase. From the second login forward, the same OAuth subject deterministically resolves to the same keypair and same `bap_id`.
+
+This is the **Privy / Magic / HandCash model**: the user logs in with tools they already trust, the platform runs the blockchain mechanics on their behalf. Consumer adoption beats sovereignty for the 99%; the 1% who want self-custody can opt into HandCash or Sigma Identity instead (see §2.3).
 
 **Layer 2 — KYC issuance (have you been verified)**
-bit-sign.online runs Veriff once per `bap_id` and, on approval, mints a `kyc/veriff` **strand** on the user's $401 identity chain. PII (document image, DOB, full name) is held by bit-sign and Veriff — *no other product receives it*. Levels match the existing $401 hierarchy: `none | basic | enhanced | full`.
+bit-sign.online runs Veriff once per `bap_id` and, on approval, mints a `kyc/veriff` **strand** on the user's $401 identity chain. PII (document image, DOB, full name) is held by bit-sign and Veriff — *no other product receives it*. Levels match the existing $401 hierarchy: `none | basic | enhanced | full`. **Unchanged from v0.1**: bit-sign is still the canonical issuer and the only product that integrates with Veriff.
 
 **Layer 3 — KYC consumption (does this user qualify)**
-Every other product (bMovies, the Mints, exchange, future apps) becomes a *reader*. It asks path401 — *"does bap_id X have a `kyc/veriff` strand at level Y or higher?"* — and gates features on the answer. No vendor integration, no PII storage, no re-verification.
+Every other product (bMovies, the Mints, exchange, future apps) becomes a *reader*. It asks path401 — *"does bap_id X have a `kyc/veriff` strand at level Y or higher?"* — and gates features on the answer. No vendor integration, no PII storage, no re-verification. **Unchanged from v0.1**: `@path401/kyc-reader` is the lib, `kyc_strands` is the SQL view, both ship in path401 monorepo.
 
-### 2.2 Why this works
+### 2.2 Why this works (revised)
 
-- **Sigma Identity is built for this** — it returns a stable `bap_id` per user that any consumer can use as the canonical identifier.
-- **bit-sign already has the complete Veriff integration** — `/api/bitsign/kyc/veriff/start` + HMAC-verified webhook + strand minting. We don't have to build it again.
-- **path401's protocol already defines KYC as a strand** — see `Path401/packages/core/src/kyc/index.ts`. The shape is already specified; only the read API needs to be exposed.
-- **It composes with OpenClaw** — see `OPENCLAW_AGENT_SPEC.md` §4. The `fiduciary_kyc_handle` field becomes `kyc:bap:<bap_id>:lvl4` instead of an opaque per-product handle. Any marketplace can resolve it.
+- **Consumer reach.** The instinct to use Sigma Identity was architecturally clean but adoption-blocked. Every BSV-native app launched in 2024-2026 with wallet-only sign-in has plateaued at four-figure user counts. Google + Twitter OAuth is what every consumer has — the friction is zero. The 90% case becomes invisible to the user; only the 10% who want sovereignty go through extra steps.
+- **bit-sign already has the complete Veriff integration** — `/api/bitsign/kyc/veriff/start` + HMAC-verified webhook + strand minting. Unchanged.
+- **path401's protocol already defines KYC as a strand** — see `Path401/packages/core/src/kyc/index.ts`. Unchanged.
+- **It composes with OpenClaw** — `fiduciary_kyc_handle` becomes `kyc:bap:<bap_id>:lvl4`. Whether the BAP id was created from a Google login or a self-sovereign HandCash wallet is invisible to consumers of the strand. The marketplace just sees a verified BAP id.
+- **Recovery story is trivial.** "Lost your account?" → "Log in with Google again." Same OAuth subject id → same derived keypair → same BAP id. No seed phrases, no recovery codes, no support tickets about lost wallets.
 
-### 2.3 Why we accept the dependency on Sigma Identity
+### 2.3 Power-user / self-custody escape hatches
 
-Sigma Identity is **not our project**. Same as `bopen.io` and `1sat.market` — both Luke Rohenaz' projects, both heavily relied on. The pattern is established: when someone in the BSV ecosystem builds a clean primitive that fits, we use it rather than re-invent. The cost of dependency is real (Sigma Identity outages would block our login) but the cost of rebuilding it is bigger and the result would be worse.
+The login layer is **multi-provider** by design. Consumers default to Google/Twitter; power users opt into:
 
-Mitigation: bMovies / bit-sign keep their existing email + HandCash login paths as fallbacks. Sigma is *added* alongside, not the only option.
+- **HandCash** — already wired in bMovies, path401-com. Custodial BSV wallet with phone-number-style handles. Pre-existing relationship in the user's portfolio.
+- **Sigma Identity** — for users who want OAuth-2.1-with-BAP and don't want any custodial component. Plugin already integrates cleanly (`@sigma-auth/better-auth-plugin`).
+- **Direct WIF / hardware wallet** — for users who want to bring their own keypair and prove control via signature.
+
+Critically, **all four paths produce the same `bap_id`-shaped artefact** for downstream consumers. A bMovies feature gated on KYC doesn't care which login path the user took; it only cares that a strand exists for the BAP id presented in the session. This keeps the architecture composable while accepting that consumer onboarding and power-user onboarding are different journeys.
+
+### 2.4 The custody question (read carefully)
+
+Server-derived keys mean the platform is **technically able** to sign on behalf of the user. That carries regulatory weight — in many jurisdictions, custodying user keys that hold tradeable financial instruments is a regulated activity (money transmitter / VASP).
+
+Three mitigations make this defensible:
+
+1. **The keys hold no balance by default.** They sign identity strands (free) and tokens minted *for* the user (the user's own creative work). They do not hold investor funds. There is no "withdraw" button on a server-derived BAP key — it's an *identity*, not a wallet.
+2. **Tradeable assets settle to addresses the user controls separately.** When a user receives royalty payouts, those route to a payout destination they configure (their HandCash handle, their own BSV/ETH/SOL address). The server-derived key never touches the funds.
+3. **Power-user paths bypass custody entirely.** A user who logs in with HandCash or Sigma is non-custodial from minute one. They get the same BAP id shape; their keys are never on our servers.
+
+This isn't a complete legal answer — it's a structural one. Counsel review (already on the legal-tracker for the comfort letter) needs to confirm the framing before we ship to UK / US / EU end users.
 
 ---
 
@@ -147,19 +180,55 @@ PII (document images, full names, DOB) live ONLY in `bit_sign_kyc_sessions.verif
 
 ### 3.3 The shared client library
 
-A small `@b0ase/kyc-reader` package (in path401 monorepo or a new shared lib repo) exposes:
+`@path401/kyc-reader` ships in the path401 monorepo (`packages/kyc-reader`). Read-only checker that any product imports to gate features. Already built — see commit `ad0da17` in path401.
 
 ```typescript
-import { readKycStrand, requireKyc } from '@b0ase/kyc-reader';
+import { createKycReader } from '@path401/kyc-reader';
+
+const kyc = createKycReader({
+  supabaseUrl: process.env.SUPABASE_URL!,
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+});
 
 // Pure read — returns the strand or null
-const strand = await readKycStrand(bapId, { minLevel: 'full' });
+const strand = await kyc.read({ bapId: '1abc...xyz' });
 
-// Gate helper — throws if not present
-await requireKyc(bapId, { minLevel: 'enhanced' });
+// Gate helper — throws KycRequiredError if missing
+await kyc.require({ bapId: '1abc...xyz' }, 'enhanced');
 ```
 
-Implementations call path401's MCP server (`packages/core/src/mcp.ts` already has `check_kyc`) or the Postgres view directly with a service-role connection.
+The reader accepts any of: `userHandle` (HandCash), `rootTxid`, `bapId`, `bsvAddress`. The `bapId` path returns null today and starts working when `bit_sign_identities.bap_id` is added. Code written today is forward-compatible.
+
+### 3.4 The auth-shim that derives keys from OAuth (NEW in v0.2)
+
+The new piece this revision adds. A small package — proposed `@path401/auth-shim` — that:
+
+1. Receives the OAuth callback (Google, Twitter, future).
+2. Extracts the **stable subject id** the provider returns (`sub` claim — Google's stable user id, Twitter's user id).
+3. Derives a deterministic ed25519 keypair from `HMAC-SHA256(serverSeed, "<provider>:<subject_id>")`.
+4. Mints (or fetches) a path401 root inscription for that keypair on first call → produces a stable `bap_id`.
+5. Returns `{ bapId, derivedAddress, providerSubject }` to the caller.
+
+The same provider+subject always derives the same keypair, so re-login = same identity. The HMAC seed lives in **one place per environment** (production: a single seed shared across all products via the secret manager; dev: per-developer seed) so any product can resolve any other product's user to the same `bap_id`.
+
+```typescript
+import { resolveBapFromOAuth } from '@path401/auth-shim';
+
+// In a /auth/google/callback handler:
+const { bapId, derivedAddress } = await resolveBapFromOAuth({
+  provider: 'google',
+  subjectId: googleProfile.sub,
+  email:     googleProfile.email,         // optional, attached as a non-PII strand label
+});
+
+// Now `bapId` is the user's stable cross-product identity. Use it in:
+// - bct_accounts.bap_id (bMovies)
+// - clawdex_holders.bap_id (Claw-Dex)
+// - any future product's user table
+// And read KYC via @path401/kyc-reader against the same id.
+```
+
+Out-of-scope for v0.2 of this doc — the shim's full design (key escrow, recovery, rotation under provider-id-change scenarios) is its own doc. This section just sketches the interface so consumers can plan against it.
 
 ### 3.4 OpenClaw manifest mapping
 
@@ -182,29 +251,47 @@ This replaces the placeholder `kyc:b0ase:518f51fe` used in NPGX's migrated manif
 
 ---
 
-## 4. Migration plan
+## 4. Migration plan (revised in v0.2)
 
-The goal is to move every product to "Sigma Identity for login + path401 strand for KYC" without disrupting existing users. Each step is independently shippable.
+The goal is to move every product to "Google/Twitter OAuth → derived keypair → BAP id → path401 strand for KYC" without disrupting existing users. Each step is independently shippable. **HandCash + Sigma Identity remain available as power-user paths**, not the primary funnel.
 
-### Step 1 — Sigma Identity sign-in alongside existing auth (1-2 days per product)
+### Step 1 — Build `@path401/auth-shim` (~1 day)
 
-Add `@sigma-auth/better-auth-plugin` to:
-1. **bMovies** — alongside Supabase email + HandCash + X OAuth.
+Sibling package to `@path401/kyc-reader` (already shipped). Exposes `resolveBapFromOAuth({ provider, subjectId, email? })` → `{ bapId, derivedAddress }`. Deterministic key derivation via HMAC-SHA256 over a server-held seed. Lives in `Path401/packages/auth-shim/`.
+
+### Step 2 — Add Google + Twitter OAuth login per product (~1 day per product)
+
+Each product adds two consumer-grade login buttons alongside the existing power-user options:
+
+1. **bMovies** — Google + Twitter alongside the existing HandCash + X (already wired) + email. The new flow on success calls `resolveBapFromOAuth` and writes `bct_accounts.bap_id`.
 2. **bmovies-exchange** — same.
-3. **The Mint family** — adds login since the Mint currently has no auth (the Privacy Principle says "never save user data" but a *signed-in* user state is compatible — it just means we know which BAP signed, not who they are).
-4. **path401-com** — already has the closest thing (HandCash + OAuth strands); Sigma slots in as another strand source.
-5. **bit-sign** — already on similar footing; switch its primary login to Sigma so the BAP id from login matches the BAP id strands attach to.
+3. **The Mint family** — Google + Twitter alongside (currently auth-less). The Mint's Privacy Principle is preserved by NOT writing the OAuth subject anywhere — only the `bap_id`. The mint never knows who the OAuth user is.
+4. **path401-com** — already has Google/Twitter as OAuth *strand* sources; this step routes them through the shim so they additionally produce a `bap_id` and a derived keypair, not just attached strands.
+5. **bit-sign** — same auth path as the others. The `bit_sign_identities` table gains a `bap_id` column linking to the path401 root.
 
-### Step 2 — Read KYC from path401 in every product (~1 day per product)
+### Step 3 — Schema link columns per product (~1 day total)
 
-For each product, replace the existing KYC check with `readKycStrand(bapId, ...)`:
+A nullable `bap_id text` column on the user table of every product:
 
-- **bMovies** — `api/_lib/require-kyc.ts` becomes a wrapper around `readKycStrand` (~10 lines).
-- **bmovies-exchange** — currently has no KYC gate; add one for share-listing flows.
-- **The Mints** — gate on-chain mint operations behind a strand check. Tokens can't be issued by anonymous addresses (legal requirement).
-- **NPGX agents on Claw-Dex** — when an agent token gets registered, the listing reads `manifest.owner.fiduciary_kyc_handle`, resolves it to the strand, refuses listing if not found.
+- `bct_accounts.bap_id` (bMovies)
+- `clawdex_holders.bap_id` (Claw-Dex)
+- `bit_sign_identities.bap_id` (bit-sign)
+- `kyc_subjects.bap_id` (path401-com / mint shared, if it stays around)
 
-### Step 3 — Deprecate duplicate KYC tables (slow, 6+ months)
+Indexes: `(bap_id) WHERE bap_id IS NOT NULL` on each table.
+
+This unlocks the `bapId` lookup path in `@path401/kyc-reader` that currently returns null.
+
+### Step 4 — Read KYC from `@path401/kyc-reader` in every product (~1 day per product)
+
+For each product, replace the existing KYC check with `kyc.require({ bapId }, 'enhanced')` or similar:
+
+- **bMovies** — `api/_lib/require-kyc.ts` becomes a 10-line wrapper.
+- **bmovies-exchange** — add a KYC gate to share-listing flows.
+- **The Mints** — gate on-chain mint operations behind a strand check.
+- **NPGX agents on Claw-Dex** — when an agent token gets registered, the listing reads `manifest.owner.fiduciary_kyc_handle`, resolves to the strand, refuses listing if not found.
+
+### Step 5 — Deprecate duplicate KYC tables (slow, 6+ months)
 
 Once every product reads from `kyc_strands`, the duplicate tables can be archived:
 
@@ -214,13 +301,13 @@ Once every product reads from `kyc_strands`, the duplicate tables can be archive
 
 PII is purged from the deprecated tables after the cutover; only `bit_sign_kyc_sessions` retains the Veriff-response blob, and that's pruned on a 30-day rolling window.
 
-### Step 4 — Single Veriff tenant + secret rotation (1 day, infra)
+### Step 6 — Single Veriff tenant + secret rotation (1 day, infra)
 
 bit-sign owns the only `VERIFF_API_KEY` and `VERIFF_WEBHOOK_SECRET` env vars across the portfolio. Other products' Veriff env vars get retired. Stripe-style: one billing account, one webhook source, one set of dashboards to monitor.
 
 ---
 
-## 5. Open questions
+## 5. Open questions (revised in v0.2)
 
 These need answers before any code lands. None of them are blockers for the spec; they're product decisions:
 
@@ -230,33 +317,54 @@ These need answers before any code lands. None of them are blockers for the spec
 
 3. **Re-verification cadence — annually, or only on a compliance trigger?** Veriff itself recommends annual re-checks; the spec currently sets `expires_at` to attested + 12 months.
 
-4. **What about users who don't (yet) have a BAP id?** Sigma Identity creates one on first login if needed (the BAP standard supports lazy creation). But for users coming in via an existing email+password account on bMovies, there's a binding step — link their bap_id once they sign in with Sigma. Schema-wise this means `bct_accounts` gains a nullable `bap_id` column.
+4. **HMAC seed management.** The auth-shim's deterministic key derivation depends on a server-held HMAC seed. Compromise of the seed = ability to forge any user's identity. Where does it live? Recommendation: a single secret per environment, stored in the Vercel/Hetzner secret manager, rotated annually with a 6-month overlap window during which BOTH the old and new seed are accepted (so existing users' deterministic keys keep resolving). Detailed rotation flow is its own ticket.
 
-5. **Does the legacy `kyc_subjects` table belong to a Mint or to path401-com?** The schema says it stores PII — *if it's the Mints*, that violates their Privacy Principle. Track down which app populates it and either retire the table or move the PII into bit-sign's storage.
+5. **OAuth subject id stability.** Google's `sub` claim is stable forever. Twitter's user id is stable. Email is **NOT stable** (users change emails). The shim MUST derive from `sub`/`user_id`, never email. Documented invariant — review every OAuth integration to confirm.
 
-6. **Should Sigma's Better Auth integration replace Supabase auth, or sit alongside?** bMovies depends on `auth.uid()` in RLS policies. Switching auth providers is a bigger move than the cross-project KYC question. Defer — for v1 we can run Sigma sign-in *in addition to* existing Supabase auth, with a `bct_accounts.bap_id` link column.
+6. **Custody framing for counsel.** Section 2.4 lays out the structural argument for why server-derived keys aren't custody-of-funds. Counsel review (already on the legal-tracker for the comfort letter) needs to bless this framing before we ship to UK/US/EU end users. A negative opinion would push us to a non-custodial model (threshold keys, user-side signing) — possible but materially more complex.
+
+7. **Does the legacy `kyc_subjects` table belong to a Mint or to path401-com?** The schema says it stores PII — *if it's the Mints*, that violates their Privacy Principle. Track down which app populates it and either retire the table or move the PII into bit-sign's storage.
+
+8. **Power-user identity bridging.** A user who first signs up via Google (gets a server-derived BAP id) and later wants to take self-custody by importing into HandCash needs a clean bridge. Design TBD: probably a "claim into wallet" flow that signs over the on-chain identity to a user-controlled key while keeping the bap_id stable.
+
+9. **Sigma Identity status — keep, drop, or defer?** v0.2 demotes Sigma from primary to power-user-opt-in. We can ship without integrating it at all and add later if real demand emerges. Recommendation: defer — don't integrate `@sigma-auth/better-auth-plugin` until at least one user actively asks.
 
 ---
 
-## 6. What to build first (proposed order)
+## 6. What to build first (revised in v0.2)
 
-1. **`@b0ase/kyc-reader` shared package** — a 50-line library that any product can import to read strands. Lives in path401 monorepo. ~half a day.
-2. **`kyc_strands` Postgres view** — ~10 lines of SQL. ~30 minutes.
-3. **Sigma Identity sign-in on bMovies** as a third login option, with `bct_accounts.bap_id` linking column. ~1 day.
-4. **bit-sign's KYC flow accepts a `bap_id` parameter and `return_to` URL** so any product can deep-link to KYC and bring the user back. ~half a day.
+Foundation (already done):
+1. ✅ **`@path401/kyc-reader` shared package** — shipped at `Path401/packages/kyc-reader` (commit `ad0da17`).
+2. ✅ **`kyc_strands` Postgres view** — applied to Hetzner.
+
+New foundation work:
+3. **`@path401/auth-shim` package** — sibling of kyc-reader. Implements `resolveBapFromOAuth`. Includes the HMAC-seed key derivation, BAP root inscription on first call, idempotent re-resolution. ~1-2 days.
+4. **`bit_sign_identities.bap_id` column** + index. Backfill existing rows by deriving from their HandCash handle. ~half a day.
 5. **OpenClaw v2 spec amendment** — formalise `kyc:bap:<id>:<level>` as the canonical `fiduciary_kyc_handle`. ~10 minutes.
-6. **Re-migrate NPGX's 26 manifests** — replace `kyc:b0ase:518f51fe` with the proper `kyc:bap:<...>` handle once the operator has a BAP id. ~minutes (re-run migration script).
 
-After steps 1-4, every new product can plug in immediately. After step 5, the agent manifest spec is consistent with this architecture. Step 6 is cleanup.
+Per-product integration (each ~1 day):
+6. **bMovies** — Google + Twitter login buttons → auth-shim → `bct_accounts.bap_id` populated → `kyc-reader` replaces existing KYC checks.
+7. **bmovies-exchange** — same pattern, share-listing gate added.
+8. **The Mints** — same pattern, mint operations gated.
+9. **path401-com** — strand sources route through shim so they additionally produce a bap_id.
+10. **bit-sign** — primary login becomes Google/Twitter; KYC start endpoint accepts `bap_id` + `return_to`.
+
+Cleanup:
+11. **Re-migrate NPGX manifests** — replace placeholder KYC handle with real `kyc:bap:<...>` once b0ase is logged in via the shim. ~minutes.
+12. **Deprecate parallel KYC tables** — after a 6-month soak, drop `user_kyc`, `kyc_subjects`, `bct_kyc_protect_verified`.
+
+After steps 3-5, the foundation is complete. Steps 6-10 can happen in any order, in parallel across products.
 
 ---
 
 ## 7. References
 
 - **OpenClaw Agent Manifest** — `path402/docs/OPENCLAW_AGENT_SPEC.md` (this doc's sibling)
+- **@path401/kyc-reader** — `Path401/packages/kyc-reader/` (shipped, commit `ad0da17`)
 - **bit-sign Veriff integration** — `bit-sign/src/app/api/bitsign/kyc/veriff/start/route.ts`, `bit-sign/src/app/api/webhooks/veriff/route.ts`
 - **bMovies KYC** — `bmovies-app/api/kyc-start.ts`, `bmovies-app/migrations/038_kyc_protect_verified.sql`, `bmovies-app/api/_lib/require-kyc.ts`
 - **path401 KYC service** — `Path401/packages/core/src/kyc/index.ts` (currently a stub)
-- **Sigma Identity docs** — https://sigmaidentity.com/docs/introduction/quickstart
-- **Sigma Auth plugin** — https://github.com/b-open-io/better-auth-plugin
-- **BAP** — Bitcoin Attestation Protocol, the on-chain identity primitive Sigma builds on
+- **path401 OAuth strand pattern** — `path401-com/app/api/auth/strand/[provider]/` (existing reference for OAuth → on-chain inscription)
+- **HandCash Connect SDK** — `@handcash/handcash-connect` (existing power-user path)
+- **Sigma Identity docs** — https://sigmaidentity.com/docs/introduction/quickstart (deferred / power-user opt-in)
+- **BAP** — Bitcoin Attestation Protocol, the underlying identity primitive (works with any keypair, regardless of how derived)
